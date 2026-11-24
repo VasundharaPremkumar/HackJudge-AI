@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
 from pathlib import Path
@@ -5,7 +6,11 @@ import uuid
 
 from database import engine, Base, get_db
 from models import Submission
-from schemas import SubmissionResponse, SubmissionStatusResponse
+from schemas import (
+    SubmissionResponse,
+    SubmissionStatusResponse,
+    SubmissionExecutionUpdate
+)
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -44,7 +49,7 @@ def health(db: Session = Depends(get_db)):
             "backend": "Running",
             "database": "Connected"
         }
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=503,
             detail="Database connection failed"
@@ -57,7 +62,6 @@ async def create_submission(
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
-
     extension = Path(file.filename or "").suffix.lower()
 
     if extension not in ALLOWED_EXTENSIONS:
@@ -106,6 +110,7 @@ async def create_submission(
     except Exception:
         db.rollback()
         file_path.unlink(missing_ok=True)
+
         raise HTTPException(
             status_code=500,
             detail="Failed to save submission"
@@ -127,7 +132,6 @@ def get_submission(
     submission_id: str,
     db: Session = Depends(get_db)
 ):
-
     submission = db.query(Submission).filter(
         Submission.submission_id == submission_id
     ).first()
@@ -150,7 +154,6 @@ def get_submission_status(
     submission_id: str,
     db: Session = Depends(get_db)
 ):
-
     submission = db.query(Submission).filter(
         Submission.submission_id == submission_id
     ).first()
@@ -165,3 +168,45 @@ def get_submission_status(
         "submission_id": submission.submission_id,
         "status": submission.status
     }
+
+
+# Update submission execution status and results
+@app.patch(
+    "/submissions/{submission_id}/execution",
+    response_model=SubmissionResponse
+)
+def update_submission_execution(
+    submission_id: str,
+    execution: SubmissionExecutionUpdate,
+    db: Session = Depends(get_db)
+):
+    submission = db.query(Submission).filter(
+        Submission.submission_id == submission_id
+    ).first()
+
+    if not submission:
+        raise HTTPException(
+            status_code=404,
+            detail="Submission not found"
+        )
+
+    submission.status = execution.status
+    submission.stdout = execution.stdout
+    submission.stderr = execution.stderr
+    submission.exit_code = execution.exit_code
+    submission.execution_time = execution.execution_time
+    submission.memory_usage = execution.memory_usage
+
+    try:
+        db.commit()
+        db.refresh(submission)
+
+        return submission
+
+    except Exception:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to update execution results"
+        )
